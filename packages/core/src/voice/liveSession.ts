@@ -10,7 +10,7 @@ import type { Session, LiveServerMessage } from '@google/genai';
 import { VoiceStateMachine } from './stateMachine.js';
 import type { VoiceState } from './stateMachine.js';
 
-export const VOICE_MODEL = 'gemini-2.5-flash-preview-native-audio-dialog';
+export const VOICE_MODEL = 'gemini-2.0-flash-live-preview-04-09';
 export const INPUT_SAMPLE_RATE = 16000;
 export const OUTPUT_SAMPLE_RATE = 24000;
 

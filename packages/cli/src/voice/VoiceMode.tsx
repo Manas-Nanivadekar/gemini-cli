@@ -26,12 +26,8 @@ type ActivationMode = 'ptt' | 'vad';
  * Main voice mode component. Renders the full voice UI and wires together
  * the Live API session, audio capture/playback, and VAD.
  *
- * Layout:
- *   ┌─ Header ──────────────────────┐
- *   │  Transcript                    │
- *   │  Waveform                      │
- *   │  StatusBar                     │
- *   └────────────────────────────────┘
+ * PTT uses a toggle model (press SPACE to start recording, press again to stop)
+ * since terminals do not expose keydown/keyup events.
  */
 export const VoiceMode: React.FC<VoiceModeProps> = ({ apiKey, onExit }) => {
   const [voiceState, setVoiceState] = useState<VoiceState>('IDLE');
@@ -45,7 +41,26 @@ export const VoiceMode: React.FC<VoiceModeProps> = ({ apiKey, onExit }) => {
   const captureRef = useRef<AudioCapture | null>(null);
   const playbackRef = useRef<AudioPlayback | null>(null);
   const vadRef = useRef<VadService | null>(null);
-  const spaceHeldRef = useRef(false);
+
+  // Refs that mirror state/props so the useInput callback never needs to be
+  // recreated. Recreating useInput's callback causes Ink to briefly
+  // unregister and re-register the stdin listener, which can crash Ink's
+  // internal input handler when a keypress arrives during the transition.
+  const onExitRef = useRef(onExit);
+  const activationModeRef = useRef<ActivationMode>('ptt');
+  const voiceStateRef = useRef<VoiceState>('IDLE');
+  const isRecordingRef = useRef(false); // tracks PTT toggle state
+
+  // Keep refs in sync with latest values
+  useEffect(() => {
+    onExitRef.current = onExit;
+  }, [onExit]);
+  useEffect(() => {
+    activationModeRef.current = activationMode;
+  }, [activationMode]);
+  useEffect(() => {
+    voiceStateRef.current = voiceState;
+  }, [voiceState]);
 
   // Wire up Live session
   useEffect(() => {
@@ -58,15 +73,12 @@ export const VoiceMode: React.FC<VoiceModeProps> = ({ apiKey, onExit }) => {
     const playback = new AudioPlayback();
     playbackRef.current = playback;
 
-    // Session events
     session.on('connected', () => {
       setStatusMessage('');
-      setVoiceState('LISTENING');
     });
 
     session.on('disconnected', (reason: string) => {
       setStatusMessage(`Disconnected: ${reason}`);
-      setVoiceState('IDLE');
     });
 
     session.on('stateChange', (state: VoiceState) => {
@@ -97,12 +109,9 @@ export const VoiceMode: React.FC<VoiceModeProps> = ({ apiKey, onExit }) => {
       setError(err.message);
     });
 
-    // Audio capture events — forward PCM to Live API
     capture.on('data', (chunk: Buffer) => {
       session.sendAudioChunk(chunk);
-      // Compute amplitude for waveform during recording
-      const rms = computeRms(chunk);
-      setAmplitude(rms);
+      setAmplitude(computeRms(chunk));
     });
 
     capture.on('error', (err: Error) => {
@@ -119,10 +128,13 @@ export const VoiceMode: React.FC<VoiceModeProps> = ({ apiKey, onExit }) => {
     };
   }, [apiKey]);
 
-  // Toggle VAD / PTT mode
+  // Toggle VAD / PTT mode — called from useInput via ref, so it can be
+  // stable itself by reading activationModeRef instead of closing over state.
   const toggleActivationMode = useCallback(async () => {
-    const next: ActivationMode = activationMode === 'ptt' ? 'vad' : 'ptt';
+    const next: ActivationMode =
+      activationModeRef.current === 'ptt' ? 'vad' : 'ptt';
     setActivationMode(next);
+    activationModeRef.current = next;
 
     if (next === 'vad') {
       const vad = new VadService();
@@ -135,11 +147,13 @@ export const VoiceMode: React.FC<VoiceModeProps> = ({ apiKey, onExit }) => {
       vad.on('speechEnd', () => {
         captureRef.current?.stop();
         sessionRef.current?.endUserTurn();
+        isRecordingRef.current = false;
       });
 
       vad.on('error', (err: Error) => {
         setError(`VAD: ${err.message}. Falling back to Push-to-Talk.`);
         setActivationMode('ptt');
+        activationModeRef.current = 'ptt';
       });
 
       await vad.initialize();
@@ -148,61 +162,48 @@ export const VoiceMode: React.FC<VoiceModeProps> = ({ apiKey, onExit }) => {
       vadRef.current?.destroy();
       vadRef.current = null;
       captureRef.current?.stop();
+      isRecordingRef.current = false;
     }
-  }, [activationMode]);
+  }, []); // no deps — reads everything through refs
 
-  // Keyboard handling
+  // Stable keyboard handler — reads all mutable values via refs so this
+  // callback is created exactly once and never triggers Ink listener churn.
   useInput(
-    (input, key) => {
-      // Exit
-      if (input === 'q' && key.ctrl) {
-        onExit();
-        return;
-      }
+    useCallback(
+      (input, key) => {
+        // Ctrl+Q or Ctrl+C — exit
+        if ((input === 'q' || input === 'c') && key.ctrl) {
+          onExitRef.current();
+          return;
+        }
 
-      // Toggle VAD/PTT with Ctrl+M
-      if (input === 'm' && key.ctrl) {
-        void toggleActivationMode();
-        return;
-      }
+        // Ctrl+M — toggle PTT / VAD
+        if (input === 'm' && key.ctrl) {
+          void toggleActivationMode();
+          return;
+        }
 
-      // Push-to-Talk: SPACE
-      if (activationMode === 'ptt') {
-        if (input === ' ') {
-          if (!spaceHeldRef.current) {
-            spaceHeldRef.current = true;
-
-            // Interrupt Gemini if it's speaking
-            if (voiceState === 'SPEAKING') {
+        // SPACE — PTT toggle (press to start recording, press again to stop)
+        if (input === ' ' && activationModeRef.current === 'ptt') {
+          if (!isRecordingRef.current) {
+            // Start recording
+            isRecordingRef.current = true;
+            // Interrupt Gemini if it's currently speaking
+            if (voiceStateRef.current === 'SPEAKING') {
               playbackRef.current?.flush();
             }
-
             void captureRef.current?.start();
+          } else {
+            // Stop recording and send
+            isRecordingRef.current = false;
+            captureRef.current?.stop();
+            sessionRef.current?.endUserTurn();
           }
         }
-      }
-    },
-    { isActive: true },
+      },
+      [toggleActivationMode],
+    ),
   );
-
-  // Space key release isn't directly available in Ink's useInput — we use a
-  // keypress approach. Ink fires a callback per-keypress, not keydown/keyup.
-  // For PTT we therefore use a 300ms debounce: if SPACE is not seen for 300ms
-  // we treat it as released. This is a terminal limitation.
-  useEffect(() => {
-    if (activationMode !== 'ptt') return;
-    if (!spaceHeldRef.current) return;
-
-    const timeout = setTimeout(() => {
-      if (spaceHeldRef.current) {
-        spaceHeldRef.current = false;
-        captureRef.current?.stop();
-        sessionRef.current?.endUserTurn();
-      }
-    }, 300);
-
-    return () => clearTimeout(timeout);
-  });
 
   const isWaveformActive =
     voiceState === 'RECORDING' || voiceState === 'SPEAKING';
@@ -210,17 +211,12 @@ export const VoiceMode: React.FC<VoiceModeProps> = ({ apiKey, onExit }) => {
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan">
       {/* Header */}
-      <Box
-        borderStyle="single"
-        borderColor="gray"
-        paddingX={1}
-        justifyContent="space-between"
-      >
+      <Box borderStyle="single" borderColor="gray" paddingX={1}>
         <Text bold color="cyan">
-          🎙 Voice Mode
+          Voice Mode
         </Text>
         <Text dimColor>
-          Model: gemini-2.5-flash | Voice: Kore | Mode:{' '}
+          {'  |  '}Model: gemini-2.0-flash-live | Voice: Kore | Mode:{' '}
           {activationMode === 'ptt' ? 'Push-to-Talk' : 'Hands-free VAD'}
         </Text>
       </Box>
@@ -228,7 +224,7 @@ export const VoiceMode: React.FC<VoiceModeProps> = ({ apiKey, onExit }) => {
       {/* Error banner */}
       {error && (
         <Box paddingX={2} paddingY={1}>
-          <Text color="red">⚠ {error}</Text>
+          <Text color="red">! {error}</Text>
         </Box>
       )}
 
