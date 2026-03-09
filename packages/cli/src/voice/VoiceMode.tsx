@@ -7,7 +7,7 @@
 import type React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
-import { LiveSession, VadService } from '@google/gemini-cli-core';
+import { LiveSession, VadService, VOICE_MODEL } from '@google/gemini-cli-core';
 import type { TranscriptEntry, VoiceState } from '@google/gemini-cli-core';
 import { Waveform } from './Waveform.js';
 import { VoiceTranscript } from './VoiceTranscript.js';
@@ -216,7 +216,8 @@ export const VoiceMode: React.FC<VoiceModeProps> = ({ apiKey, onExit }) => {
           Voice Mode
         </Text>
         <Text dimColor>
-          {'  |  '}Model: gemini-2.0-flash-live | Voice: Kore | Mode:{' '}
+          {'  |  '}
+          {VOICE_MODEL} | Voice: Kore | Mode:{' '}
           {activationMode === 'ptt' ? 'Push-to-Talk' : 'Hands-free VAD'}
         </Text>
       </Box>

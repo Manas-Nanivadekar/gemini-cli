@@ -10,7 +10,10 @@ import type { Session, LiveServerMessage } from '@google/genai';
 import { VoiceStateMachine } from './stateMachine.js';
 import type { VoiceState } from './stateMachine.js';
 
-export const VOICE_MODEL = 'gemini-2.0-flash-live-preview-04-09';
+// Use env var GEMINI_VOICE_MODEL to override, e.g.
+//   GEMINI_VOICE_MODEL=gemini-live-2.5-flash-preview
+export const VOICE_MODEL =
+  process.env['GEMINI_VOICE_MODEL'] ?? 'gemini-2.0-flash-live-001';
 export const INPUT_SAMPLE_RATE = 16000;
 export const OUTPUT_SAMPLE_RATE = 24000;
 
@@ -41,7 +44,6 @@ export class LiveSession extends EventEmitter {
   private session: Session | null = null;
   private stateMachine = new VoiceStateMachine();
   private currentOutputTranscript = '';
-  private currentInputTranscript = '';
   private apiKey: string;
   private aborted = false;
 
@@ -69,7 +71,6 @@ export class LiveSession extends EventEmitter {
       config: {
         responseModalities: [Modality.AUDIO],
         outputAudioTranscription: {},
-        inputAudioTranscription: {},
         speechConfig: {
           voiceConfig: {
             prebuiltVoiceConfig: { voiceName: 'Kore' },
@@ -103,7 +104,13 @@ export class LiveSession extends EventEmitter {
         onclose: (e: CloseEvent) => {
           if (this.aborted) return;
           this.stateMachine.forceTransition('IDLE');
-          this.emit('disconnected', e.reason ?? 'Connection closed');
+          // Surface close code alongside reason for easier debugging
+          const reason =
+            e.reason ||
+            (e.code !== 1000
+              ? `WebSocket closed (code ${e.code})`
+              : 'Session ended');
+          this.emit('disconnected', reason);
         },
       },
     });
@@ -154,11 +161,6 @@ export class LiveSession extends EventEmitter {
       this.currentOutputTranscript += content.outputTranscription.text;
     }
 
-    // Handle input transcription (user's speech as text)
-    if (content.inputTranscription?.text) {
-      this.currentInputTranscript += content.inputTranscription.text;
-    }
-
     // Handle turn complete
     if (content.turnComplete) {
       if (this.currentOutputTranscript) {
@@ -168,14 +170,6 @@ export class LiveSession extends EventEmitter {
           timestamp: new Date(),
         } satisfies TranscriptEntry);
         this.currentOutputTranscript = '';
-      }
-      if (this.currentInputTranscript) {
-        this.emit('transcriptUpdate', {
-          speaker: 'user',
-          text: this.currentInputTranscript,
-          timestamp: new Date(),
-        } satisfies TranscriptEntry);
-        this.currentInputTranscript = '';
       }
       this.stateMachine.transition('LISTENING');
       this.emit('turnComplete');
