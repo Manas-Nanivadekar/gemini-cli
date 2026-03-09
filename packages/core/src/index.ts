@@ -219,3 +219,6 @@ export * from './utils/terminal.js';
 
 // Export types from @google/genai
 export type { Content, Part, FunctionCall } from '@google/genai';
+
+// Export voice mode
+export * from './voice/index.js';

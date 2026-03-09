@@ -84,6 +84,8 @@
     "zod-to-json-schema": "^3.25.1"
   },
   "optionalDependencies": {
+    "@ricky0123/vad-node": "^0.0.21",
+    "onnxruntime-node": "^1.20.1",
     "@lydell/node-pty": "1.1.0",
     "@lydell/node-pty-darwin-arm64": "1.1.0",
     "@lydell/node-pty-darwin-x64": "1.1.0",
